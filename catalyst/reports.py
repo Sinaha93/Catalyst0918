@@ -61,6 +61,9 @@ def generate(rid):
         run=c.execute('SELECT * FROM runs WHERE id=?',(rid,)).fetchone()
     if not run: raise ValueError('확정 마감을 찾을 수 없습니다')
     snap=json.loads(run['snapshot'])
+    from .report_estimates import report_note
+    for row in snap['details']:
+        row['note']=report_note(row)
     unknown=set(r['customer'] for r in snap['details'])-set(CUSTOMERS)
     if unknown: raise ValueError('기존 양식에 없는 거래처입니다: '+', '.join(unknown))
     period=run['period']; year,month=map(int,period.split('-'))
@@ -157,6 +160,8 @@ def generate(rid):
         for index,r in enumerate(unresolved,4):
             q=Decimal(r['closing']); amount=Decimal(r['closing_amount'])
             pending.Range(f'B{index}:M{index}').Value=((index-3,r['customer'],r.get('vehicle',''),r['part'],r.get('price_type',''),float(amount/q) if q else 0,float(r['opening']),float(r['receipt']),float(r['settlement']),float(q),float(amount),r['note']),)
+        from .report_estimates import write_excel, append_ppt
+        write_excel(pending,snap)
         # Existing chart series retain their source ranges; the 13-month data window is rolled.
         combined=workbook.Worksheets('종합2')
         update_history(combined,30,2,None,history_map,year,month)
@@ -181,6 +186,7 @@ def generate(rid):
         images['trend']=p
         workbook.Close(SaveChanges=True);workbook=None
         patch_pptx(psource,pout,images,snap,year,month)
+        append_ppt(pout,snap)
         verify_output(xout,pout,snap)
         # Publish only after both exports exist.
         for p in (xout,pout):shutil.copy2(p,store.ROOT/'outputs'/p.name)
@@ -200,6 +206,11 @@ def verify_output(xout,pout,snapshot):
         expected=sum(Decimal(r['settlement_amount']) for r in snapshot['customers'])
         actual=Decimal(str(wb['종합']['I17'].value or 0))
         if abs(expected-actual)>Decimal('0.01'):raise ValueError('출력 엑셀 종합 금액이 확정 결과와 다릅니다')
+        from .report_estimates import estimate_rows
+        for index,row in enumerate(estimate_rows(snapshot),5):
+            value=wb['미정산품목(26년6월)'].cell(index,21).value
+            if value is None or abs(Decimal(str(value))-row['estimated_amount'])>Decimal('0.01'):
+                raise ValueError('엑셀 예상 정산금액 대사 불일치')
         for sheet in wb:
             for row in sheet:
                 if any(c.data_type=='e' for c in row):
