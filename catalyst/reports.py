@@ -1,14 +1,11 @@
 """Office template exporter. Workbooks are rendered by the installed Excel engine."""
 import json
-import re
 import shutil
 import tempfile
-import zipfile
 import hashlib
 from pathlib import Path
 from datetime import date
 from decimal import Decimal
-from lxml import etree as ET
 import openpyxl
 from . import store
 
@@ -24,7 +21,7 @@ def template(suffix):
 
 def freeze_context(period):
     context={'templates':{},'earlier':[]}
-    for suffix in ('.xlsx','.pptx'):
+    for suffix in ('.xlsx',):
         try:source=template(suffix)
         except ValueError:continue
         digest=hashlib.sha256(source.read_bytes()).hexdigest()
@@ -69,18 +66,18 @@ def generate(rid):
     period=run['period']; year,month=map(int,period.split('-'))
     stem=f'{year}년 {month}월 촉매 마감_v{run["version"]}'
     context=snap.get('report_context')
-    if not context or len(context['templates'])!=2:
+    if not context or '.xlsx' not in context.get('templates',{}):
         raise ValueError('확정 시점의 보고서 양식이 없습니다. 양식을 등록한 후 수정 마감을 확정해주세요.')
     def frozen(suffix):
         info=context['templates'][suffix]; path=store.ROOT/'archive'/info['file']
         if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest()!=info['hash']:
             raise ValueError('보관된 보고서 양식이 없거나 변경되었습니다')
         return path
-    xsource=frozen('.xlsx'); psource=frozen('.pptx')
+    xsource=frozen('.xlsx')
     baseline=openpyxl.load_workbook(xsource,data_only=True)
     # Never publish a stale month series under a new reporting date.
     work=Path(tempfile.mkdtemp(prefix='catalyst_report_'))
-    xout=work/(stem+'.xlsx'); pout=work/(stem+'.pptx')
+    xout=work/(stem+'.xlsx')
     shutil.copy2(xsource,xout)
     excel=None; workbook=None
     pythoncom.CoInitialize()
@@ -152,18 +149,16 @@ def generate(rid):
             summary.Cells(idx,15).Value=historical_average(history_map,name,year-1,'실적','수량')
         # Replace the unresolved-item content within the existing formatted worksheet.
         pending=workbook.Worksheets('미정산품목(26년6월)')
-        pending.Range('B4:M1000').UnMerge()
-        pending.Range('B4:M1000').ClearContents()
         pending.Range('B1').Value=f'▣ {year%100}년 {month}월 이월 및 정산품목'
         pending.Range('I3').Value=f'{month}월 매입'; pending.Range('J3').Value=f'{month}월 마감'
-        unresolved=[r for r in snap['details'] if Decimal(r['closing'])!=0 or r['note']]
-        for index,r in enumerate(unresolved,4):
-            q=Decimal(r['closing']); amount=Decimal(r['closing_amount'])
-            pending.Range(f'B{index}:M{index}').Value=((index-3,r['customer'],r.get('vehicle',''),r['part'],r.get('price_type',''),float(amount/q) if q else 0,float(r['opening']),float(r['receipt']),float(r['settlement']),float(q),float(amount),r['note']),)
-        from .report_estimates import write_excel, append_ppt
+        from .pending_report import grouped_rows, write_excel as write_pending
+        write_pending(pending,grouped_rows(snap['details'],CUSTOMERS))
+        from .report_estimates import write_excel
         write_excel(pending,snap)
         # Existing chart series retain their source ranges; the 13-month data window is rolled.
-        combined=workbook.Worksheets('종합2')
+        trend_name='월별 계획·실적' if '월별 계획·실적' in baseline.sheetnames else '종합2'
+        combined=workbook.Worksheets(trend_name)
+        if trend_name=='종합2':combined.Name='월별 계획·실적'
         update_history(combined,30,2,None,history_map,year,month)
         cum=workbook.Worksheets('종합3(누적)')
         cum.UsedRange.ClearContents()
@@ -172,34 +167,17 @@ def generate(rid):
         if history_rows:cum.Range(f'A2:F{len(history_rows)+1}').Value=tuple(history_rows)
         excel.CalculateFullRebuild()
         workbook.Save()
-        images={}
-        for name in CUSTOMERS:
-            ws=workbook.Worksheets(name)
-            p=work/(name+'_invoice.png');capture_range(excel,ws,detail_ranges[name],p)
-            images[name+'_invoice']=p
-            p=work/(name+'_chart.png')
-            if not ws.ChartObjects(1).Chart.Export(str(p),'PNG'):raise RuntimeError(name+' 차트 저장 실패')
-            images[name+'_chart']=p
-        p=work/'summary.png';capture_range(excel,summary,'B4:Q17',p);images['summary']=p
-        p=work/'trend.png'
-        if not combined.ChartObjects(1).Chart.Export(str(p),'PNG'):raise RuntimeError('종합 차트 저장 실패')
-        images['trend']=p
         workbook.Close(SaveChanges=True);workbook=None
-        patch_pptx(psource,pout,images,snap,year,month)
-        append_ppt(pout,snap)
-        verify_output(xout,pout,snap)
-        # Publish only after both exports exist.
-        for p in (xout,pout):shutil.copy2(p,store.ROOT/'outputs'/p.name)
-        return {'files':[xout.name,pout.name]}
+        verify_output(xout,snap)
+        shutil.copy2(xout,store.ROOT/'outputs'/xout.name)
+        return {'files':[xout.name]}
     finally:
         if workbook is not None:workbook.Close(SaveChanges=False)
         if excel is not None:excel.Quit()
         pythoncom.CoUninitialize()
 
-def verify_output(xout,pout,snapshot):
-    """Fail the job before publication if Office cannot open the result."""
-    import win32com.client
-    import io
+def verify_output(xout,snapshot):
+    """Validate the calculated workbook before publication; no PowerPoint needed."""
     wb=openpyxl.load_workbook(xout,data_only=True,read_only=True)
     try:
         if len(wb.sheetnames)!=14:raise ValueError('출력 엑셀 시트 수가 기준과 다릅니다')
@@ -207,6 +185,13 @@ def verify_output(xout,pout,snapshot):
         actual=Decimal(str(wb['종합']['I17'].value or 0))
         if abs(expected-actual)>Decimal('0.01'):raise ValueError('출력 엑셀 종합 금액이 확정 결과와 다릅니다')
         from .report_estimates import estimate_rows
+        from .pending_report import grouped_rows
+        for index,row in enumerate(grouped_rows(snapshot['details'],CUSTOMERS),4):
+            if not row['subtotal']:continue
+            for col,key in ((8,'opening'),(9,'receipt'),(10,'settlement'),(11,'closing'),(12,'closing_amount')):
+                value=wb['미정산품목(26년6월)'].cell(index,col).value
+                if value is None or abs(Decimal(str(value))-Decimal(row[key]))>Decimal('0.01'):
+                    raise ValueError('미정산 납품처 소계 대사 불일치: '+row['customer'])
         for index,row in enumerate(estimate_rows(snapshot),5):
             value=wb['미정산품목(26년6월)'].cell(index,21).value
             if value is None or abs(Decimal(str(value))-row['estimated_amount'])>Decimal('0.01'):
@@ -216,24 +201,6 @@ def verify_output(xout,pout,snapshot):
                 if any(c.data_type=='e' for c in row):
                     raise ValueError(sheet.title+' 시트에 Excel 수식 오류가 있습니다')
     finally:wb.close()
-    power=win32com.client.DispatchEx('PowerPoint.Application')
-    try:
-        deck=power.Presentations.Open(str(pout),ReadOnly=True,Untitled=False,WithWindow=False)
-        try:
-            for slide in deck.Slides:
-                for shape in slide.Shapes:
-                    if shape.HasTable and shape.Top+shape.Height>deck.PageSetup.SlideHeight-18:
-                        raise ValueError(f'PPT {slide.SlideIndex}쪽 표가 페이지를 넘습니다. 긴 비고를 줄여주세요.')
-        finally:deck.Close()
-        with zipfile.ZipFile(pout) as z:
-            children=[n for n in z.namelist() if n.startswith('ppt/embeddings/') and n.endswith('.pptx')]
-            if len(children)!=10:raise ValueError('거래처별 내장 자료 10개가 필요합니다')
-            for i,name in enumerate(children):
-                child=pout.parent/f'verify_embedded_{i}.pptx'
-                child.write_bytes(z.read(name))
-                deck=power.Presentations.Open(str(child),ReadOnly=True,Untitled=False,WithWindow=False)
-                deck.Close()
-    finally:power.Quit()
 
 def update_history(ws,header,col,customer,history,year,month):
     metrics=[('계획','수량'),('실적','수량'),('계획','금액'),('실적','금액')]
@@ -266,126 +233,3 @@ def historical_average(history,customer,year,typ,metric):
     keys=[customer] if customer else CUSTOMERS
     values=[history.get((year,m,c,typ,metric)) for m in range(1,13) for c in keys]
     return sum(values)/12 if all(v is not None for v in values) else None
-
-NS={'a':'http://schemas.openxmlformats.org/drawingml/2006/main','p':'http://schemas.openxmlformats.org/presentationml/2006/main','r':'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
-
-def patch_pptx(source,destination,images,snapshot,year,month,customer=None):
-    """Replace image data and native table content, recursively updating embedded decks."""
-    import io
-    import copy
-    import posixpath
-    with zipfile.ZipFile(source) as z:parts={n:z.read(n) for n in z.namelist()}
-    candidates=[r for r in snapshot['details'] if Decimal(r['closing'])!=0 or r['note']]
-    if not customer and len(candidates)>36:
-        # Extend the native continuation table without changing original slide layouts.
-        presentation=ET.fromstring(parts['ppt/presentation.xml'])
-        reltree=ET.fromstring(parts['ppt/_rels/presentation.xml.rels'])
-        types=ET.fromstring(parts['[Content_Types].xml'])
-        ids=presentation.find('p:sldIdLst',NS)
-        next_id=max(int(e.get('id')) for e in ids)+1
-        count=(len(candidates)-36+17)//18
-        for extra in range(count):
-            num=6+extra; rid=f'rIdCatalyst{num}'
-            parts[f'ppt/slides/slide{num}.xml']=parts['ppt/slides/slide5.xml']
-            slide_rels=ET.fromstring(parts['ppt/slides/_rels/slide5.xml.rels'])
-            # Notes have an exclusive back-reference to their owning slide.
-            for rel in list(slide_rels):
-                if rel.get('Type','').endswith('/notesSlide'):slide_rels.remove(rel)
-            parts[f'ppt/slides/_rels/slide{num}.xml.rels']=ET.tostring(slide_rels)
-            ET.SubElement(ids,'{'+NS['p']+'}sldId',id=str(next_id+extra),attrib={'{'+NS['r']+'}id':rid})
-            ET.SubElement(reltree,'{http://schemas.openxmlformats.org/package/2006/relationships}Relationship',Id=rid,Type=NS['r']+'/slide',Target=f'slides/slide{num}.xml')
-            ET.SubElement(types,'{http://schemas.openxmlformats.org/package/2006/content-types}Override',PartName=f'/ppt/slides/slide{num}.xml',ContentType='application/vnd.openxmlformats-officedocument.presentationml.slide+xml')
-        parts['ppt/presentation.xml']=ET.tostring(presentation)
-        parts['ppt/_rels/presentation.xml.rels']=ET.tostring(reltree)
-        parts['[Content_Types].xml']=ET.tostring(types)
-    slide_names=sorted([n for n in parts if re.fullmatch('ppt/slides/slide[0-9]+.xml',n)],key=lambda n:int(re.search(r'slide(\d+)',n).group(1)))
-    for idx,name in enumerate(slide_names,1):
-        root=ET.fromstring(parts[name])
-        for paragraph in root.findall('.//a:p',NS):
-            texts=paragraph.findall('.//a:t',NS)
-            original=''.join(t.text or '' for t in texts)
-            updated=re.sub(r'26년\s*8월',f'{year%100}년 {month}월',original)
-            updated=re.sub(r'2026\.\s*9\.\s*4',date.today().strftime('%Y.%m.%d'),updated)
-            updated=re.sub(r'8월(?=\s*(매입|마감|미결))',f'{month}월',updated)
-            if not customer and re.fullmatch(r'\d+/5',updated.strip()):
-                updated=f'{idx}/{len(slide_names)}'
-                for field in paragraph.findall('a:fld',NS):
-                    field.tag='{'+NS['a']+'}r'
-                    field.attrib.clear()
-            if texts and updated!=original:
-                texts[0].text=updated
-                for text in texts[1:]:text.text=''
-        relpath='ppt/slides/_rels/'+Path(name).name+'.rels'
-        relroot=ET.fromstring(parts[relpath])
-        rels={r.attrib['Id']:r for r in relroot}
-        key=(customer+('_invoice' if idx==1 else '_chart')) if customer else {2:'summary',3:'trend'}.get(idx)
-        if key:
-            pictures=root.findall('.//p:pic',NS)
-            # The report content is the largest picture, not the logo.
-            if pictures:
-                def area(pic):
-                    ext=pic.find('p:spPr/a:xfrm/a:ext',NS)
-                    return int(ext.get('cx','0'))*int(ext.get('cy','0')) if ext is not None else 0
-                picture=max(pictures,key=area)
-                blip=picture.find('.//a:blip',NS)
-                rid=blip.get('{'+NS['r']+'}embed')
-                target='media/generated_'+('customer_'+str(idx) if customer else str(idx))+'.png'
-                rels[rid].set('Target','../'+target)
-                parts['ppt/'+target]=images[key].read_bytes()
-        if not customer and idx==2:
-            body=root.find('.//a:tbl/a:tr/a:tc/a:txBody',NS)
-            if body is not None:
-                paragraphs=body.findall('a:p',NS)
-                proto=copy.deepcopy(paragraphs[0])
-                for paragraph in paragraphs:body.remove(paragraph)
-                lines=[f'※ {month}월 미결 사유 및 특이사항']
-                for c in CUSTOMERS:
-                    notes=list(dict.fromkeys(r['note'] for r in snapshot['details'] if r['customer']==c and r['note']))
-                    lines.append(c+' : '+(' / '.join(notes) if notes else '등록된 사유 없음'))
-                for line in lines:
-                    paragraph=copy.deepcopy(proto)
-                    texts=paragraph.findall('.//a:t',NS)
-                    texts[0].text=line
-                    for text in texts[1:]:text.text=''
-                    body.append(paragraph)
-        if not customer and idx>=4:
-            table=root.find('.//a:tbl',NS)
-            if table is not None:
-                all_rows=table.findall('a:tr',NS)
-                # Original rows have mixed heights. Use a conservative page size
-                # with the copied body row so content cannot extend past the footer.
-                capacity=18
-                offset=(idx-4)*18
-                subset=candidates[offset:offset+capacity]
-                for tr in all_rows[2:]:table.remove(tr)
-                for n,r in enumerate(subset,offset+1):
-                    tr=copy.deepcopy(all_rows[2])
-                    q=Decimal(r['closing']);amount=Decimal(r['closing_amount'])
-                    values=[str(n),r['customer'],r.get('vehicle',''),r['part'],r.get('price_type',''),f'{amount/q:,.2f}' if q else '',r['opening'],r['receipt'],r['settlement'],r['closing'],f'{amount/1000:,.3f}',r['note']]
-                    for tc,value in zip(tr.findall('a:tc',NS),values):
-                        for attr in ('rowSpan','gridSpan','hMerge','vMerge'):tc.attrib.pop(attr,None)
-                        texts=tc.findall('.//a:t',NS)
-                        if texts:
-                            texts[0].text=str(value)
-                            for t in texts[1:]:t.text=''
-                    table.append(tr)
-        parts[name]=ET.tostring(root,encoding='utf-8',xml_declaration=True)
-        parts[relpath]=ET.tostring(relroot,encoding='utf-8',xml_declaration=True)
-    if not customer:
-        for name in list(parts):
-            if name.startswith('ppt/embeddings/') and name.endswith('.pptx'):
-                content=parts[name]
-                with zipfile.ZipFile(io.BytesIO(content)) as child:
-                    child_xml=ET.fromstring(child.read('ppt/slides/slide1.xml'))
-                    text=''.join(t.text or '' for t in child_xml.findall('.//a:t',NS))
-                matched=next((c for c in CUSTOMERS if c in text),None)
-                if not matched:raise ValueError('내장 상세 자료의 거래처를 찾을 수 없습니다')
-                out=io.BytesIO()
-                patch_pptx(io.BytesIO(content),out,images,snapshot,year,month,matched)
-                parts[name]=out.getvalue()
-    ct=ET.fromstring(parts['[Content_Types].xml'])
-    if not any(e.get('Extension')=='png' for e in ct):
-        ET.SubElement(ct,'{http://schemas.openxmlformats.org/package/2006/content-types}Default',Extension='png',ContentType='image/png')
-    parts['[Content_Types].xml']=ET.tostring(ct,encoding='utf-8',xml_declaration=True)
-    with zipfile.ZipFile(destination,'w',zipfile.ZIP_DEFLATED) as out:
-        for name,content in parts.items():out.writestr(name,content)

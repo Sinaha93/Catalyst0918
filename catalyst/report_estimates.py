@@ -1,6 +1,5 @@
 """Separate planning estimates from the recorded closing valuation in exports."""
 from decimal import Decimal
-import re
 
 def report_note(row):
     note=row.get('note','')
@@ -46,55 +45,3 @@ def write_excel(ws,snapshot):
     ws.Range(f'V5:V{len(rows)+4}').WrapText=True
     ws.Range(f'Q5:U{len(rows)+4}').NumberFormat='#,##0.00'
     area.Rows.AutoFit()
-
-
-def append_ppt(path,snapshot):
-    rows=estimate_rows(snapshot)
-    if not rows:return
-    import win32com.client
-    app=win32com.client.DispatchEx('PowerPoint.Application')
-    deck=None
-    try:
-        deck=app.Presentations.Open(str(path),ReadOnly=False,Untitled=False,WithWindow=False)
-        for r in rows:
-            slide=deck.Slides(4).Duplicate().Item(1)
-            slide.MoveTo(deck.Slides.Count)
-            for i in range(slide.Shapes.Count,0,-1):
-                shape=slide.Shapes(i)
-                if shape.HasTable:shape.Delete();continue
-                if shape.HasTextFrame and shape.TextFrame.HasText:
-                    text=shape.TextFrame.TextRange.Text
-                    if '미정산 품목' in text:shape.TextFrame.TextRange.Text='▣ 예상 정산금액 (참고)'
-                    elif '단위:' in text:shape.TextFrame.TextRange.Text='단위: 개 / 원'
-            def textbox(text,x,y,w,h,size):
-                shape=slide.Shapes.AddTextbox(1,x,y,w,h)
-                shape.TextFrame.TextRange.Text=text
-                shape.TextFrame.TextRange.Font.Name='맑은 고딕'
-                shape.TextFrame.TextRange.Font.Size=size
-                shape.TextFrame.WordWrap=True
-                return shape
-            textbox(r['customer']+' / '+r['part'],24,85,732,40,22)
-            values=[['항목','기록 기준','추정 기준'],
-                ['미결 수량',f"{r['quantity']:,.0f}",f"{r['quantity']:,.0f}"],
-                ['평가 단가(원)',f"{r['recorded_rate']:,.2f}" if r['recorded_rate'] is not None else '해당 없음',f"{r['estimated_price']:,.2f}"],
-                ['금액(원)',f"{r['recorded_amount']:,.0f}",f"{r['estimated_amount']:,.0f}"]]
-            table=slide.Shapes.AddTable(4,3,24,145,732,160).Table
-            for ri,values_row in enumerate(values,1):
-                for ci,value in enumerate(values_row,1):
-                    shape=table.Cell(ri,ci).Shape
-                    shape.TextFrame.TextRange.Text=value
-                    shape.TextFrame.TextRange.Font.Name='맑은 고딕'
-                    shape.TextFrame.TextRange.Font.Size=20
-                    shape.TextFrame.TextRange.Font.Color.RGB=0
-                    shape.Fill.ForeColor.RGB=0xB5D6FF if ri==1 else 0xFFFFFF
-            textbox('추정 금액은 실제 정산 및 다음 달 이월 금액에 반영하지 않습니다.',24,330,732,55,18)
-            textbox('추정 사유: '+r['reason'],24,395,732,95,16)
-        for index,slide in enumerate(deck.Slides,1):
-            for shape in slide.Shapes:
-                if shape.HasTextFrame and shape.TextFrame.HasText:
-                    if re.fullmatch(r'\d+/\d+',shape.TextFrame.TextRange.Text.strip()):
-                        shape.TextFrame.TextRange.Text=f'{index}/{deck.Slides.Count}'
-        deck.Save()
-    finally:
-        if deck is not None:deck.Close()
-        app.Quit()

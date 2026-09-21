@@ -37,7 +37,7 @@ async def watch():
     while True:
         await asyncio.sleep(5)
         for path in (store.ROOT/'input').glob('*'):
-            if path.suffix.lower() not in ('.xlsx','.csv','.pptx') or path.name.startswith('~$'):
+            if path.suffix.lower() not in ('.xlsx','.csv') or path.name.startswith('~$'):
                 continue
             try:
                 stat=path.stat()
@@ -101,15 +101,15 @@ def sources():
 @app.post('/api/scan')
 def scan():
     def action():
-        paths=[p for folder in (store.ROOT,store.ROOT/'input') for p in folder.glob('*') if p.suffix.lower() in ('.xlsx','.csv','.pptx') and not p.name.startswith('~$')]
+        paths=[p for folder in (store.ROOT,store.ROOT/'input') for p in folder.glob('*') if p.suffix.lower() in ('.xlsx','.csv') and not p.name.startswith('~$')]
         return [imports.register(p) for p in paths]
     return job(action)
 
 @app.post('/api/upload')
 async def upload(file:UploadFile):
     name=Path(file.filename or '').name
-    if Path(name).suffix.lower() not in ('.xlsx','.csv','.pptx'):
-        raise ValueError('xlsx, csv, pptx 파일을 선택해주세요')
+    if Path(name).suffix.lower() not in ('.xlsx','.csv'):
+        raise ValueError('xlsx, csv 파일을 선택해주세요')
     destination=store.ROOT/'input'/(uuid.uuid4().hex[:8]+'_'+name)
     content=await file.read(100*1024*1024+1)
     if len(content)>100*1024*1024:
@@ -244,12 +244,12 @@ def export(rid:int):
 
 @app.get('/api/outputs')
 def outputs():
-    return [p.name for p in (store.ROOT/'outputs').glob('*') if p.suffix in ('.xlsx','.pptx','.json')]
+    return [p.name for p in (store.ROOT/'outputs').glob('*') if p.suffix in ('.xlsx','.json')]
 
 @app.get('/api/outputs/{name}')
 def output(name:str):
     path=(store.ROOT/'outputs'/name).resolve()
-    if path.parent!=(store.ROOT/'outputs').resolve() or not path.is_file(): raise HTTPException(404)
+    if path.parent!=(store.ROOT/'outputs').resolve() or not path.is_file() or path.suffix.lower() not in ('.xlsx','.json'): raise HTTPException(404)
     return FileResponse(path,filename=path.name)
 
 @app.get('/api/jobs/{jid}')

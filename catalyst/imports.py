@@ -80,7 +80,7 @@ def inspect(path):
         raise ValueError('xlsx, csv, pptx 파일을 지원합니다. 구형 xls는 xlsx로 저장해주세요.')
     data = tables(path)
     kind = '열 연결 필요'
-    if '종합' in data and '종합2' in data:
+    if '종합' in data and any(name in data for name in ('월별 계획·실적','종합2')):
         kind = '월마감 기준자료'
     elif '납품 Summary' in data:
         kind = '주차별 발주납품'
