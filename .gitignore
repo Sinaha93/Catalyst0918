@@ -10,11 +10,13 @@ input/
 outputs/
 backups/
 *.exe
+*.lnk
 logs/
 work/
 *.spec
 *.xlsx
 *.xls
+*.xlsm
 *.csv
 *.pptx
 *.ppt

@@ -17,6 +17,7 @@ def init():
     with db() as c:
         c.executescript('''
         CREATE TABLE IF NOT EXISTS schema_version(version INTEGER PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS source_cancellations(id INTEGER PRIMARY KEY, source_ids TEXT NOT NULL, snapshot TEXT NOT NULL, restored INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);
         INSERT OR IGNORE INTO schema_version VALUES(1);
         CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY, name TEXT NOT NULL, hash TEXT UNIQUE NOT NULL, path TEXT NOT NULL, status TEXT NOT NULL, meta TEXT NOT NULL, created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS profiles(id INTEGER PRIMARY KEY, name TEXT NOT NULL, signature TEXT NOT NULL, config TEXT NOT NULL);

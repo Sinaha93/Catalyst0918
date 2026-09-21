@@ -56,7 +56,7 @@ if __name__=='__main__':
         main()
     except Exception:
         logging.getLogger('uvicorn').exception('프로그램 시작 실패')
-        if getattr(sys,'frozen',False) and sys.platform=='win32':
+        if sys.platform=='win32' and (getattr(sys,'frozen',False) or sys.stderr is None):
             import ctypes
             ctypes.windll.user32.MessageBoxW(None,'프로그램을 시작하지 못했습니다.\nlogs/application.log를 확인해주세요.','촉매 마감 관리',0x10)
         else:

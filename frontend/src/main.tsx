@@ -418,7 +418,7 @@ function App() {
                     전체 보기 <ArrowUpRight size={14} />
                   </button>
                 </div>
-                <FileTable items={sources.slice(0, 4)} onMap={openMapping} />
+                <FileTable items={sources.filter(s=>s.status!=='cancelled').slice(0, 4)} onMap={openMapping} />
               </section>
             </>
           )}
@@ -462,8 +462,9 @@ function App() {
                   <h2>입력 자료</h2>
                   <span>{sources.length}개 파일</span>
                 </div>
-                <FileTable items={sources} onMap={openMapping} />
+                <SourceManager items={sources} onMap={openMapping} onSave={reload}/>
               </section>
+              <MasterImport items={sources} period={period} onSave={reload}/>
             </>
           )}
           {tab === 2 && (
@@ -1035,9 +1036,11 @@ function App() {
 function FileTable({
   items,
   onMap,
+  onManage,
 }: {
   items: Row[];
   onMap: (s: Row) => void;
+  onManage?: (s: Row) => void;
 }) {
   return (
     <div className="scroll">
@@ -1068,6 +1071,7 @@ function FileTable({
                         pending: "열 연결 필요",
                         imported: "반영 완료",
                         error: "읽기 오류",
+                        cancelled: "삭제·반영 취소",
                       } as Row
                     )[s.status]
                   }
@@ -1075,11 +1079,12 @@ function FileTable({
               </td>
               <td>{s.created.slice(0, 10)}</td>
               <td>
-                {s.status === "pending" && (
+                {s.status === "pending" && !['BOM 마스터','구매단가등록'].includes(s.meta.type) && (
                   <button onClick={() => onMap(s)}>
                     열 연결 <ChevronRight size={14} />
                   </button>
                 )}
+                {onManage && <button onClick={()=>onManage(s)}>{s.status==='cancelled'?'복원':'삭제'}</button>}
               </td>
             </tr>
           ))}
@@ -1090,6 +1095,15 @@ function FileTable({
       )}
     </div>
   );
+}
+function SourceManager({items,onMap,onSave}:{items:Row[];onMap:(s:Row)=>void;onSave:()=>Promise<void>}){
+ const [show,setShow]=useState(false),[impact,setImpact]=useState<Row|null>(null),[reason,setReason]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);
+ return <><div className="formFooter"><label><input type="checkbox" checked={show} onChange={e=>setShow(e.target.checked)}/> 삭제한 자료 보기</label><span role="status">{message}</span></div><FileTable items={items.filter(s=>show||s.status!=='cancelled')} onMap={onMap} onManage={async s=>{try{const result=await api('/sources/'+s.id+'/impact');setImpact({...result,sid:s.id});setReason('');setMessage('');}catch(e:any){setMessage(e.message);}}}/>{impact&&<div className="formGrid"><section><h3>{impact.cancelled?'자료 복원':'자료 삭제·반영 취소'}</h3><p>{impact.sources.map((s:Row)=>s.name).join(', ')}</p><p>연결 자료 {impact.sources.length}개, 반영 내역 {fmt(impact.count)}건. 대상: {impact.periods.join(', ')||'반영 내역 없음'}.</p>{impact.sources.length>1&&<p>함께 계산한 자료이므로 위 파일을 한 묶음으로 처리합니다.</p>}{impact.master&&<p>품번·단가는 적용일 이후 미확정 계산에 영향을 줍니다. 직접 입력한 연결 정보는 유지됩니다.</p>}<p>원본 파일과 확정 마감 {impact.frozen_runs.length}건은 보존합니다. 삭제 후 같은 파일을 다시 올려도 자동 반영하지 않습니다.</p><label>사유<input value={reason} onChange={e=>setReason(e.target.value)}/></label><button disabled={busy||!reason.trim()} onClick={async()=>{setBusy(true);try{await api('/sources/'+impact.sid+'/cancel-or-restore',{fingerprint:impact.fingerprint,reason});await onSave();setImpact(null);setMessage('처리했습니다. 원본과 이전 마감은 보존했습니다.');}catch(e:any){setMessage(e.message);}finally{setBusy(false);}}}>{impact.cancelled?'복원 확인':'삭제 확인'}</button><button disabled={busy} onClick={()=>setImpact(null)}>닫기</button></section></div>}</>;
+}
+function MasterImport({items,period,onSave}:{items:Row[];period:string;onSave:()=>Promise<void>}){
+ const [form,setForm]=useState<Row>({bom_id:'',price_id:'',effective_date:'',reason:''}),[result,setResult]=useState<Row|null>(null),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);
+ const update=(k:string,v:string)=>{setForm({...form,[k]:v});setResult(null);};
+ return <section className="panel"><div className="panelTitle"><h2>BOM·구매단가 연결</h2><span>기존 촉매 관리 현황 대체</span></div><p className="help">BOM에서 품번·마감처·촉매사를, ERP에서 구매단가를 가져옵니다. 월계획 매크로는 실행하지 않습니다. 적용 기준일을 직접 확인해주세요(현재 마감월: {period}). 파일명 날짜·입력일을 적용일로 간주하지 않습니다. 기존 월계획 수량과 확정 마감은 변경하지 않습니다.</p><div className="formGrid">{[['bom_id','BOM 마스터'],['price_id','구매단가등록']].map(([key,label])=><label key={key}>{label}<select value={form[key]} onChange={e=>update(key,e.target.value)}><option value="">파일 선택</option>{items.filter(s=>s.status!=='cancelled'&&s.meta.type===label).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>)}<label>적용 기준일<input type="date" value={form.effective_date} onChange={e=>update('effective_date',e.target.value)}/></label><label>변경 사유<input value={form.reason} onChange={e=>update('reason',e.target.value)}/></label></div><div className="formFooter"><span role="status">{message}</span><button disabled={busy||!form.bom_id||!form.price_id||!form.effective_date} onClick={async()=>{setBusy(true);setResult(null);try{setResult(await api('/master-import/preview',form));setMessage('');}catch(e:any){setMessage(e.message);}finally{setBusy(false);}}}>연결·단가 변경 미리보기</button></div>{result&&<><p className="help">품번 {result.parts}개 / 마감처 연결 {result.links}개 / 단가 {result.prices}개. 미사용 품번도 단가가 없으면 0원으로 만들지 않습니다.</p>{result.errors.map((e:string,i:number)=><p className="help" key={i}>{e}</p>)}{result.missing.length>0&&<p className="help">단가 없음: {result.missing.join(', ')}</p>}<div className="scroll"><table><thead><tr><th>품번</th><th>기존 단가(원)</th><th>새 단가(원)</th></tr></thead><tbody>{result.changes.map((r:Row)=><tr key={r.part}><td>{r.part}</td><td>{fmt(r.before)}</td><td>{fmt(r.after)}</td></tr>)}</tbody></table></div><div className="formFooter"><button className="primary" disabled={busy||!!result.errors.length||!form.reason.trim()} onClick={async()=>{setBusy(true);try{await api('/master-import/apply',{...form,fingerprint:result.fingerprint});await onSave();setResult(null);setMessage('BOM·구매단가를 반영했습니다.');}catch(e:any){setMessage(e.message);}finally{setBusy(false);}}}>변경 확인 및 반영</button></div></>}</section>;
 }
 function Evidence({rows}:{rows:Row[]}){
  if(rows[0]?.['항목'])return <div className="scroll"><table><thead><tr>{['거래처','항목','기준 값','현재 계산','차이'].map(k=><th key={k}>{k}</th>)}</tr></thead><tbody>{rows.map((r,i)=><tr key={i}><td>{r.customer}</td><td>{r['항목']}</td>{['기준 값','현재 계산','차이'].map(k=><td key={k}>{fmt(r[k])}</td>)}</tr>)}</tbody></table><a className="download" href={'/api/sources/'+rows[0].source_id+'/download'}>기준 엑셀 다운로드</a></div>;

@@ -79,7 +79,8 @@ def inspect(path):
     if suffix not in ('.xlsx','.csv'):
         raise ValueError('xlsx, csv, pptx 파일을 지원합니다. 구형 xls는 xlsx로 저장해주세요.')
     data = tables(path)
-    kind = '열 연결 필요'
+    from .master_import import identify
+    kind = identify(data) or '열 연결 필요'
     if '종합' in data and any(name in data for name in ('월별 계획·실적','종합2')):
         kind = '월마감 기준자료'
     elif '납품 Summary' in data:
@@ -151,6 +152,10 @@ def commit_rows(rows, source_id, scope, mode, reason='', confirm=False):
         raise ValueError('반영할 자료가 없습니다')
     with store.db() as c:
         # A source hash is imported at most once unless explicitly revised via a new source.
+        if source_id:
+            source=c.execute('SELECT status FROM sources WHERE id=?',(source_id,)).fetchone()
+            if not source or source['status']=='cancelled':
+                raise ValueError('취소한 자료는 먼저 복원해주세요')
         if source_id and c.execute('SELECT 1 FROM batches WHERE source_id=?',(source_id,)).fetchone():
             raise ValueError('이미 반영된 파일입니다. 수정본을 새로 등록해주세요.')
         old = c.execute('SELECT id FROM batches WHERE scope=? AND active=1',(scope,)).fetchall()
@@ -186,6 +191,8 @@ def mapped_rows(sid,config):
         source=c.execute('SELECT * FROM sources WHERE id=?',(sid,)).fetchone()
     if not source:
         raise ValueError('원본을 찾을 수 없습니다')
+    if source['status']=='cancelled':
+        raise ValueError('취소한 자료는 먼저 복원해주세요')
     data=tables(source_path(source))
     sheet=config['sheet']
     header=int(config['header_row'])

@@ -12,11 +12,24 @@ def preview(period):
     start=date.fromisoformat(period+'-01')
     end=date(start.year,start.month,calendar.monthrange(start.year,start.month)[1]).isoformat()
     with store.db() as c:
-        records=[dict(r) for r in c.execute('SELECT r.*, b.source_id,b.scope FROM records r JOIN batches b ON r.batch_id=b.id WHERE b.active=1 AND r.date<=? ORDER BY r.date,r.id',(end,))]
+        records=[dict(r) for r in c.execute('SELECT r.*, b.source_id,b.scope,b.created AS imported_at FROM records r JOIN batches b ON r.batch_id=b.id WHERE b.active=1 AND r.date<=? ORDER BY r.date,r.id',(end,))]
         previous=f'{start.year-1}-12' if start.month==1 else f'{start.year}-{start.month-1:02d}'
         prior=c.execute('SELECT snapshot FROM runs WHERE period=? ORDER BY version DESC LIMIT 1',(previous,)).fetchone()
         links=[dict(r) for r in c.execute('SELECT * FROM part_links')]
         estimates=[dict(r) for r in c.execute('SELECT * FROM price_estimates WHERE period=? AND enabled=1 ORDER BY customer,part',(period,))]
+    # Source-owned BOM links follow active batch versions; cancellation restores previous metadata.
+    linked={(r['part'],r['customer']):r for r in links}
+    manual_links=dict(linked)
+    for r in records:
+        if r['kind']=='part':
+            link=json.loads(r['provenance']).get('link')
+            if link:
+                key=(r['part'],r['customer'])
+                linked[key]={**linked.get(key,{}),**link,'part':r['part'],'customer':r['customer']}
+                manual=manual_links.get(key,{})
+                if manual.get('updated','')>r['imported_at']:
+                    linked[key].update(manual)
+    links=list(linked.values())
     parts={r['part'] for r in records if r['kind']=='part'}|{r['part'] for r in links}
     prices=[r for r in records if r['kind']=='price']
     current=[r for r in records if r['date'].startswith(period) and r['kind'] not in ('part','price')]

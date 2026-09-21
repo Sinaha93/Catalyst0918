@@ -11,7 +11,7 @@ from fastapi import FastAPI, UploadFile, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from . import store, imports, closing, estimates
+from . import store, imports, closing, estimates, source_lifecycle, master_import
 
 LOCK=threading.RLock()
 
@@ -81,7 +81,7 @@ async def bad_value(request,exc):
 @app.get('/api/status')
 def status():
     with store.db() as c:
-        return {'app':'catalyst-closing','sources':c.execute('SELECT COUNT(*) FROM sources').fetchone()[0], 'records':c.execute('SELECT COUNT(*) FROM records r JOIN batches b ON b.id=r.batch_id WHERE b.active=1').fetchone()[0], 'pending':c.execute("SELECT COUNT(*) FROM sources WHERE status IN ('pending','error')").fetchone()[0], 'runs':c.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 'input_folder':str(store.ROOT/'input')}
+        return {'app':'catalyst-closing','sources':c.execute("SELECT COUNT(*) FROM sources WHERE status!='cancelled'").fetchone()[0], 'records':c.execute('SELECT COUNT(*) FROM records r JOIN batches b ON b.id=r.batch_id WHERE b.active=1').fetchone()[0], 'pending':c.execute("SELECT COUNT(*) FROM sources WHERE status IN ('pending','error')").fetchone()[0], 'runs':c.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 'input_folder':str(store.ROOT/'input')}
 
 @app.post('/api/shutdown')
 def shutdown():
@@ -124,6 +124,24 @@ def original(sid:int):
     if not row:
         raise HTTPException(404)
     return FileResponse(imports.source_path(row),filename=row['name'])
+
+@app.get('/api/sources/{sid}/impact')
+def source_impact(sid:int):
+    with LOCK: return source_lifecycle.impact(sid)
+
+@app.post('/api/sources/{sid}/cancel-or-restore')
+def source_change(sid:int,payload:dict):
+    with LOCK: return source_lifecycle.change(sid,payload)
+
+@app.post('/api/master-import/preview')
+def master_preview(payload:dict):
+    with LOCK:
+        result=master_import.preview(payload)
+        return {k:v for k,v in result.items() if k!='rows'}
+
+@app.post('/api/master-import/apply')
+def master_apply(payload:dict):
+    with LOCK: return master_import.apply(payload)
 
 @app.post('/api/sources/{sid}/preview')
 def map_preview(sid:int,config:dict):
@@ -213,7 +231,7 @@ def revise(record_id:int,payload:dict):
 @app.get('/api/issues')
 def issues():
     with store.db() as c:
-        return [dict(r) for r in c.execute('SELECT * FROM issues WHERE resolved=0 ORDER BY id DESC')]
+        return [dict(r) for r in c.execute("SELECT i.* FROM issues i LEFT JOIN sources s ON s.id=i.source_id WHERE i.resolved=0 AND (s.status IS NULL OR s.status!='cancelled') ORDER BY i.id DESC")]
 
 @app.get('/api/closing/{period}')
 def preview(period:str):
