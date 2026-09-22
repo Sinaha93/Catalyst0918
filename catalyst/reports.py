@@ -51,6 +51,14 @@ def capture_range(excel,ws,address,path):
 def write_cell(ws,r,c,value):
     ws.Cells(r,c).Value=float(value) if isinstance(value,(Decimal,int,float)) else value
 
+def simplify_trend_sheet(ws):
+    """Leave the trend worksheet as a chart-only report view."""
+    ws.Range('B66:AT148').ClearContents()
+    ws.Rows('30:148').Hidden=True
+    charts=ws.ChartObjects()
+    for index in range(1,charts.Count+1):
+        charts.Item(index).Chart.PlotVisibleOnly=False
+
 def generate(rid):
     import pythoncom
     import win32com.client
@@ -160,6 +168,7 @@ def generate(rid):
         combined=workbook.Worksheets(trend_name)
         if trend_name=='종합2':combined.Name='월별 계획·실적'
         update_history(combined,30,2,None,history_map,year,month)
+        simplify_trend_sheet(combined)
         cum=workbook.Worksheets('종합3(누적)')
         cum.UsedRange.ClearContents()
         cum.Range('A1:F1').Value=(('연도','월','거래처','구분','항목','값'),)
