@@ -12,6 +12,8 @@ def preview(period):
     start=date.fromisoformat(period+'-01')
     end=date(start.year,start.month,calendar.monthrange(start.year,start.month)[1]).isoformat()
     with store.db() as c:
+        diagnostic_sources=[dict(r) for r in c.execute("SELECT s.*, EXISTS(SELECT 1 FROM batches b WHERE b.source_id=s.id AND b.active=1) AS active FROM sources s WHERE s.status NOT IN ('deleted','cancelled')")]
+        diagnostic_masters=[dict(r) for r in c.execute("SELECT r.*,b.source_id FROM records r JOIN batches b ON b.id=r.batch_id WHERE b.active=1 AND r.kind IN ('part','price')")]
         records=[dict(r) for r in c.execute('SELECT r.*, b.source_id,b.scope,b.created AS imported_at FROM records r JOIN batches b ON r.batch_id=b.id WHERE b.active=1 AND r.date<=? ORDER BY r.date,r.id',(end,))]
         previous=f'{start.year-1}-12' if start.month==1 else f'{start.year}-{start.month-1:02d}'
         prior=c.execute('SELECT snapshot FROM runs WHERE period=? ORDER BY version DESC LIMIT 1',(previous,)).fetchone()
@@ -30,10 +32,14 @@ def preview(period):
                 if manual.get('updated','')>r['imported_at']:
                     linked[key].update(manual)
     links=list(linked.values())
+    from . import supplier_allocation
+    allocation=supplier_allocation.derive(period,records,links,json.loads(prior[0]) if prior else None)
+    records.extend(allocation['rows'])
     parts={r['part'] for r in records if r['kind']=='part'}|{r['part'] for r in links}
     prices=[r for r in records if r['kind']=='price']
     current=[r for r in records if r['date'].startswith(period) and r['kind'] not in ('part','price')]
-    issues=[]
+    issues=list(allocation['issues'])
+    from .issue_explanation import explain
     details={}
     def item(part,customer):
         return details.setdefault((part,customer),{'part':part,'customer':customer,'opening':D(0),'receipt':D(0),'settlement':D(0),'shipment':D(0),'adjustment':D(0),'plan':D(0),'receipt_amount':D(0),'settlement_amount':D(0),'opening_amount':D(0),'closing_amount':D(0),'note':'','evidence':[]})
@@ -62,7 +68,7 @@ def preview(period):
         prov=json.loads(r['provenance'])
         target['evidence'].append({'record_id':r['id'],**prov})
         if r['part'] not in parts:
-            issues.append({'code':'part','message':r['part']+' 품번 마스터 누락','evidence':prov})
+            issues.append({'code':'part','message':r['part']+' 품번 마스터 누락','evidence':prov,'explanation':explain('part',r,diagnostic_masters,diagnostic_sources)})
         if q<0 and not r['note']:
             issues.append({'code':'negative','message':r['part']+' 음수 수량의 반품·조정 사유 필요','evidence':prov})
         applicable=[p for p in prices if p['part']==r['part'] and p['customer'] in ('',r['customer']) and p['date']<=r['date']]
@@ -73,7 +79,7 @@ def preview(period):
         if field:
             if amount is None and q!=0:
                 target[field]=None
-                issues.append({'code':'price','message':r['part']+' '+r['date']+' 적용 단가 또는 금액 누락','evidence':prov})
+                issues.append({'code':'price','message':r['part']+' '+r['date']+' 적용 단가 또는 금액 누락','evidence':prov,'explanation':explain('price',r,diagnostic_masters,diagnostic_sources)})
             elif target[field] is not None:
                 target[field]+=amount or D(0)
     for row in details.values():
@@ -102,6 +108,8 @@ def preview(period):
     for customer,group in groups.items():
         if customer not in planned_customers:group['plan']=None
     result={'period':period,'details':list(details.values()),'customers':[{'customer':k,**v} for k,v in groups.items()],'issues':issues,'ready':not issues,'record_count':len(current),'source_ids':sorted({r['source_id'] for r in records if r['source_id']}),'input_snapshot':records,'estimate_snapshot':estimates}
+    result['source_ids']=sorted(set(result['source_ids'])|set(allocation['source_ids']))
+    result['supplier_allocation']={k:v for k,v in allocation.items() if k not in ('rows','issues')}
     result=json.loads(store.encode(result))
     result['fingerprint']=hashlib.sha256(store.encode(result).encode()).hexdigest()
     return result

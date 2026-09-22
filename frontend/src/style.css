@@ -1,3 +1,10 @@
+.sourceFileInfo { min-width: 0; }
+.sourceRequirement { color: #406956; font-size: 12px; margin-top: 5px; }
+.sourceLocation { margin-top: 8px; font-size: 12px; white-space: normal; max-width: 560px; }
+.sourceLocation summary { cursor: pointer; color: #406956; }
+.sourcePath { display: grid; gap: 5px; margin: 10px 0; }
+.sourcePath code { overflow-wrap: anywhere; user-select: text; font-family: inherit; color: #405149; }
+.sourcePath button { justify-self: start; padding: 4px 8px; font-size: 12px; }
 :root {
   font-family: "Segoe UI", "Malgun Gothic", sans-serif;
   color: #24342f;
@@ -588,6 +595,19 @@ textarea {
 .issue > svg:last-child {
   margin-left: auto;
 }
+.issueContext { font-size: 12px; line-height: 1.7; color: #425b52; overflow-wrap: anywhere; }
+.issueContext > div { margin-top: 5px; }
+.issueExplanation { padding: 24px; overflow-wrap: anywhere; }
+.issueExplanation p { line-height: 1.7; }
+.issueExplanation h3 { margin-top: 22px; font-size: 15px; }
+.issueExplanation small { display: block; margin: 16px 0; color: #63756e; }
+.historyHeading { padding: 22px; cursor: pointer; font-weight: 600; }
+.historyHeading span { margin-left: 12px; color: #63756e; font-size: 12px; font-weight: 400; }
+.historyBrowser { padding: 0 20px 20px; }
+.historyFilters { border: 0; padding: 0; margin: 0; display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+.historyFilters label { display: flex; flex-direction: column; gap: 6px; }
+.historyResults { max-height: 520px; overflow: auto; }
+.historyResults pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .issue strong {
   font-size: 13px;
   font-weight: 550;
@@ -795,3 +815,16 @@ textarea {
     font-size: 23px;
   }
 }
+.supplierImport { padding: 24px; }
+.supplierImport p { line-height: 1.65; margin: 12px 0; }
+.supplierIntro { font-size: 16px; }
+.supplierControls { display: flex; gap: 16px; align-items: end; margin: 24px 0 12px; flex-wrap: wrap; }
+.supplierControls label { display: flex; flex-direction: column; gap: 8px; }
+.supplierImport details { margin: 20px 0; }
+.supplierImport summary { cursor: pointer; padding: 10px 0; }
+.allocationEditor { margin: 12px 24px; padding: 16px; border: 1px solid #dce4e1; border-radius: 8px; }
+.allocationEditor summary { cursor: pointer; }
+.allocationEditor p { margin: 12px 0; line-height: 1.6; }
+.allocationEditor label { display: block; margin: 12px 0; }
+.allocationInputs > div { display: flex; gap: 10px; margin: 12px 0; flex-wrap: wrap; }
+.allocationInputs select, .allocationInputs input { width: 180px; }

@@ -81,7 +81,7 @@ async def bad_value(request,exc):
 @app.get('/api/status')
 def status():
     with store.db() as c:
-        return {'app':'catalyst-closing','sources':c.execute("SELECT COUNT(*) FROM sources WHERE status!='cancelled'").fetchone()[0], 'records':c.execute('SELECT COUNT(*) FROM records r JOIN batches b ON b.id=r.batch_id WHERE b.active=1').fetchone()[0], 'pending':c.execute("SELECT COUNT(*) FROM sources WHERE status IN ('pending','error')").fetchone()[0], 'runs':c.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 'input_folder':str(store.ROOT/'input')}
+        return {'app':'catalyst-closing','sources':c.execute("SELECT COUNT(*) FROM sources WHERE status NOT IN ('cancelled','deleted')").fetchone()[0], 'records':c.execute('SELECT COUNT(*) FROM records r JOIN batches b ON b.id=r.batch_id WHERE b.active=1').fetchone()[0], 'pending':c.execute("SELECT COUNT(*) FROM sources WHERE status IN ('pending','error')").fetchone()[0], 'runs':c.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 'input_folder':str(store.ROOT/'input')}
 
 @app.post('/api/shutdown')
 def shutdown():
@@ -95,15 +95,23 @@ def shutdown():
 
 @app.get('/api/sources')
 def sources():
+    from .source_roles import describe
+    from .erp_import import recognizes_meta, TYPE
+    from .supplier_import import meta_type
+    from . import plan_import
     with store.db() as c:
-        return [{**dict(r),'meta':json.loads(r['meta'])} for r in c.execute('SELECT * FROM sources ORDER BY id DESC')]
-
-@app.post('/api/scan')
-def scan():
-    def action():
-        paths=[p for folder in (store.ROOT,store.ROOT/'input') for p in folder.glob('*') if p.suffix.lower() in ('.xlsx','.csv') and not p.name.startswith('~$')]
-        return [imports.register(p) for p in paths]
-    return job(action)
+        records=[dict(r) for r in c.execute('SELECT b.source_id,r.kind,r.date FROM records r JOIN batches b ON b.id=r.batch_id WHERE b.active=1')]
+        result=[]
+        for row in c.execute("SELECT * FROM sources WHERE status!='deleted' ORDER BY id DESC"):
+            meta=json.loads(row['meta'])
+            if recognizes_meta(meta):meta['type']=TYPE
+            meta['type']=meta_type(meta) or meta.get('type','')
+            if plan_import.recognizes_meta(meta):meta['type']=plan_import.TYPE
+            archive=imports.source_path(row).resolve()
+            result.append({**dict(row),'meta':meta,'storage_path':str(archive),'storage_exists':archive.is_file(),
+                           **describe(meta,[r for r in records if r['source_id']==row['id']]),
+                           'registered_from':meta.get('registered_from'),'registered_from_kind':meta.get('registered_from_kind')})
+        return result
 
 @app.post('/api/upload')
 async def upload(file:UploadFile):
@@ -115,7 +123,7 @@ async def upload(file:UploadFile):
     if len(content)>100*1024*1024:
         raise ValueError('파일은 100MB 이하여야 합니다')
     destination.write_bytes(content)
-    return job(lambda:imports.register(destination))
+    return job(lambda:imports.register(destination,allow_deleted=True))
 
 @app.get('/api/sources/{sid}/download')
 def original(sid:int):
@@ -123,21 +131,76 @@ def original(sid:int):
         row=c.execute('SELECT * FROM sources WHERE id=?',(sid,)).fetchone()
     if not row:
         raise HTTPException(404)
-    return FileResponse(imports.source_path(row),filename=row['name'])
+    path=imports.source_path(row)
+    if not path.is_file():raise HTTPException(404)
+    return FileResponse(path,filename=row['name'])
 
 @app.get('/api/sources/{sid}/impact')
 def source_impact(sid:int):
     with LOCK: return source_lifecycle.impact(sid)
 
-@app.post('/api/sources/{sid}/cancel-or-restore')
+@app.get('/api/registration-reset/preview')
+def registration_reset_preview():
+    with LOCK:return source_lifecycle.reset_impact()
+
+@app.post('/api/registration-reset')
+def registration_reset(payload:dict):
+    with LOCK:return source_lifecycle.reset_registrations(payload)
+
+@app.post('/api/sources/{sid}/delete')
 def source_change(sid:int,payload:dict):
-    with LOCK: return source_lifecycle.change(sid,payload)
+    with LOCK:
+        try:return source_lifecycle.change(sid,payload)
+        except OSError as exc:raise ValueError('파일을 닫은 후 다시 삭제해주세요. '+str(exc))
+
+@app.post('/api/sources/{sid}/cancel-or-restore')
+def removed_restore(sid:int):
+    raise HTTPException(410,'자료 복원 기능은 제거되었습니다. 새로고침해주세요.')
 
 @app.post('/api/master-import/preview')
 def master_preview(payload:dict):
     with LOCK:
         result=master_import.preview(payload)
         return {k:v for k,v in result.items() if k!='rows'}
+
+@app.post('/api/sources/{sid}/erp-preview')
+def erp_preview(sid:int,payload:dict):
+    from . import erp_import
+    with LOCK:
+        result=erp_import.preview(sid,payload.get('period'))
+        return {**result,'rows':result['rows'][:10]}
+
+@app.post('/api/sources/{sid}/erp-apply')
+def erp_apply(sid:int,payload:dict):
+    from . import erp_import
+    return job(lambda:erp_import.apply(sid,payload))
+
+@app.post('/api/sources/{sid}/supplier-preview')
+def supplier_preview(sid:int,payload:dict):
+    from . import supplier_import
+    with LOCK:return supplier_import.preview(sid,payload.get('period'))
+
+@app.post('/api/sources/{sid}/supplier-apply')
+def supplier_apply(sid:int,payload:dict):
+    from . import supplier_import
+    return job(lambda:supplier_import.apply(sid,payload))
+
+@app.post('/api/supplier-allocation')
+def supplier_allocation_save(payload:dict):
+    from . import supplier_allocation
+    with LOCK:return supplier_allocation.save(payload)
+
+@app.post('/api/sources/{sid}/plan-preview')
+def plan_preview(sid:int):
+    from . import plan_import
+    with LOCK:
+        result=plan_import.preview(sid)
+        return {k:v for k,v in result.items() if k!='rows'}
+
+@app.post('/api/sources/{sid}/plan-apply')
+def plan_apply(sid:int,payload:dict):
+    from . import plan_import
+    return job(lambda:plan_import.apply(sid,payload))
 
 @app.post('/api/master-import/apply')
 def master_apply(payload:dict):
@@ -165,6 +228,21 @@ def records():
 def part_links():
     with store.db() as c:
         return [dict(r) for r in c.execute('SELECT * FROM part_links ORDER BY customer,part')]
+
+@app.get('/api/advanced/rules')
+def advanced_rules():
+    from . import advanced
+    return advanced.rules()
+
+@app.post('/api/advanced/rules')
+def advanced_rule_save(payload:dict):
+    from . import advanced
+    with LOCK:return advanced.save_rule(payload)
+
+@app.get('/api/advanced/history')
+def advanced_history(before:int=0,action:str='',query:str='',since:str='',until:str='',limit:int=20):
+    from . import advanced
+    return advanced.history(before,action,query,since,until,limit)
 
 @app.get('/api/price-estimates')
 def price_estimates():
@@ -231,7 +309,7 @@ def revise(record_id:int,payload:dict):
 @app.get('/api/issues')
 def issues():
     with store.db() as c:
-        return [dict(r) for r in c.execute("SELECT i.* FROM issues i LEFT JOIN sources s ON s.id=i.source_id WHERE i.resolved=0 AND (s.status IS NULL OR s.status!='cancelled') ORDER BY i.id DESC")]
+        return [dict(r) for r in c.execute("SELECT i.* FROM issues i LEFT JOIN sources s ON s.id=i.source_id WHERE i.resolved=0 AND (s.status IS NULL OR s.status NOT IN ('cancelled','deleted')) ORDER BY i.id DESC")]
 
 @app.get('/api/closing/{period}')
 def preview(period:str):
@@ -269,6 +347,18 @@ def output(name:str):
     path=(store.ROOT/'outputs'/name).resolve()
     if path.parent!=(store.ROOT/'outputs').resolve() or not path.is_file() or path.suffix.lower() not in ('.xlsx','.json'): raise HTTPException(404)
     return FileResponse(path,filename=path.name)
+
+@app.post('/api/outputs/{name}/delete')
+def delete_output(name:str,payload:dict):
+    with LOCK:
+        path=store.ROOT/'outputs'/name
+        if path.is_symlink() or path.resolve().parent!=(store.ROOT/'outputs').resolve() or not path.is_file() or path.suffix.lower() not in ('.xlsx','.json'):
+            raise HTTPException(404)
+        if payload.get('confirm') is not True:raise ValueError('보고서 파일의 영구 삭제를 확인해주세요')
+        try:path.unlink()
+        except OSError as exc:raise ValueError('보고서를 닫은 후 다시 삭제해주세요. '+str(exc))
+        with store.db() as c:store.audit(c,'delete_output',{'name':name})
+        return {'deleted':name}
 
 @app.get('/api/jobs/{jid}')
 def get_job(jid:str):

@@ -24,3 +24,13 @@ def test_migration_text_not_business_reason():
 
 def test_equivalent_decimal_format():
     assert estimate_rows({'details':[detail(estimated_closing_amount='984675266.00')]})[0]['estimated_amount']==984675266
+
+
+def test_import_provenance_removed_business_reasons_preserved():
+    row={'note':'월계획 / ERP 추출단가 / 구매단가등록_20260921.xlsx / 개발 이벤트 / 단가 미확정(가단가)'}
+    original=row['note']
+    assert report_note(row)=='개발 이벤트 / 단가 미확정(가단가)'
+    assert row['note']==original
+    assert report_note({'note':'월계획 / ERP 추출단가 / 구매단가등록_20260921.xlsx'})==''
+    assert report_note({'note':'마감 후 입고 / 전주공장 직사급'})=='마감 후 입고 / 전주공장 직사급'
+    assert report_note({'note':None})==''

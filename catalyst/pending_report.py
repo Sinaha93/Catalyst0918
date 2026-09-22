@@ -1,4 +1,4 @@
-"""Shared pending-detail/subtotal rows for Excel and PowerPoint."""
+"""Pending detail includes opening carry or remaining unclosed quantity only."""
 from decimal import Decimal as D
 
 FIELDS=('opening','receipt','settlement','closing','closing_amount')
@@ -7,7 +7,7 @@ def grouped_rows(details,customers):
     result=[]
     for customer in customers:
         rows=[r for r in details if r['customer']==customer and
-              (D(r['opening'])!=0 or D(r['closing'])!=0 or r.get('note'))]
+              (D(r['opening'])!=0 or D(r['closing'])!=0)]
         if not rows:continue
         for r in rows:
             result.append({**r,'subtotal':False,'number':len([x for x in result if not x['subtotal']])+1})

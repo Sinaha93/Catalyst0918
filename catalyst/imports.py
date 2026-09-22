@@ -80,13 +80,19 @@ def inspect(path):
         raise ValueError('xlsx, csv, pptx 파일을 지원합니다. 구형 xls는 xlsx로 저장해주세요.')
     data = tables(path)
     from .master_import import identify
+    from .erp_import import is_layout, TYPE
     kind = identify(data) or '열 연결 필요'
+    if any(is_layout(rows) for rows in data.values()):kind=TYPE
     if '종합' in data and any(name in data for name in ('월별 계획·실적','종합2')):
         kind = '월마감 기준자료'
     elif '납품 Summary' in data:
         kind = '주차별 발주납품'
     elif '글로비스' in data and 'Sheet2' in data:
         kind = '출하 배부자료'
+    from .supplier_import import identify as supplier_type
+    kind = supplier_type(data) or kind
+    from .plan_import import matches, TYPE as PLAN_TYPE
+    if len(matches(data))==1:kind=PLAN_TYPE
     sheets = []
     for name, rows in data.items():
         candidates = []
@@ -104,12 +110,12 @@ def inspect(path):
             meta['external_links'] = len([n for n in z.namelist() if re.fullmatch(r'xl/externalLinks/externalLink\d+.xml',n)])
     return meta
 
-def register(path):
+def register(path, allow_deleted=False):
     path = Path(path)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     with store.db() as c:
         existing = c.execute('SELECT id,status FROM sources WHERE hash=?',(digest,)).fetchone()
-        if existing:
+        if existing and not (allow_deleted and existing['status']=='deleted'):
             return {**dict(existing),'duplicate':True}
     destination = store.ROOT / 'archive' / (digest + path.suffix.lower())
     if not destination.exists():
@@ -119,8 +125,14 @@ def register(path):
         status = 'reference' if '기준자료' in meta['type'] else 'pending'
     except Exception as e:
         meta, status = {'type':'읽기 오류','error':str(e),'sheets':[]}, 'error'
+    meta['registered_from']=str(path.resolve())
+    meta['registered_from_kind']='input' if path.resolve().parent==(store.ROOT/'input').resolve() else 'file'
+    if existing:meta['reimport_allowed']=True
     with store.db() as c:
-        c.execute('INSERT OR IGNORE INTO sources(name,hash,path,status,meta,created) VALUES(?,?,?,?,?,?)', (path.name,digest,str(destination),status,store.encode(meta),store.stamp()))
+        if existing:
+            c.execute('UPDATE sources SET name=?,path=?,status=?,meta=?,created=? WHERE id=?',(path.name,str(destination),status,store.encode(meta),store.stamp(),existing['id']))
+        else:
+            c.execute('INSERT OR IGNORE INTO sources(name,hash,path,status,meta,created) VALUES(?,?,?,?,?,?)', (path.name,digest,str(destination),status,store.encode(meta),store.stamp()))
         sid = c.execute('SELECT id FROM sources WHERE hash=?',(digest,)).fetchone()[0]
         store.audit(c,'register',{'source_id':sid,'name':path.name})
     if status == 'pending':
@@ -128,6 +140,18 @@ def register(path):
     return {'id':sid,'duplicate':False}
 
 def auto_apply(sid,meta):
+    from . import plan_import
+    if meta.get('type')==plan_import.TYPE:
+        try:
+            result=plan_import.preview(sid)
+            # Revisions or manual plans require visible confirmation; new months do not.
+            if not result['errors'] and not result['replace_count']:plan_import.apply(sid,result)
+        except (ValueError,TypeError):pass
+        return
+    from .erp_import import TYPE
+    if meta.get('type')==TYPE:return  # Monthly crosstabs have no transaction date column.
+    from .supplier_import import meta_type
+    if meta_type(meta):return  # Supplier receipts must not duplicate the ERP ledger.
     with store.db() as c:
         profiles = [json.loads(r[0]) for r in c.execute('SELECT config FROM profiles')]
     matches = [p for p in profiles if any(s['name']==p['sheet'] and any(h['row']==p['header_row'] and h['signature']==p['signature'] for h in s['headers']) for s in meta['sheets'])]
@@ -153,11 +177,12 @@ def commit_rows(rows, source_id, scope, mode, reason='', confirm=False):
     with store.db() as c:
         # A source hash is imported at most once unless explicitly revised via a new source.
         if source_id:
-            source=c.execute('SELECT status FROM sources WHERE id=?',(source_id,)).fetchone()
-            if not source or source['status']=='cancelled':
-                raise ValueError('취소한 자료는 먼저 복원해주세요')
+            source=c.execute('SELECT status,meta FROM sources WHERE id=?',(source_id,)).fetchone()
+            if not source or source['status'] in ('cancelled','deleted'):
+                raise ValueError('삭제·취소한 자료는 반영할 수 없습니다')
         if source_id and c.execute('SELECT 1 FROM batches WHERE source_id=?',(source_id,)).fetchone():
-            raise ValueError('이미 반영된 파일입니다. 수정본을 새로 등록해주세요.')
+            if source['status']=='imported' or not json.loads(source['meta']).get('reimport_allowed') or c.execute('SELECT 1 FROM batches WHERE source_id=? AND active=1',(source_id,)).fetchone():
+                raise ValueError('이미 반영된 파일입니다. 수정본을 새로 등록해주세요.')
         old = c.execute('SELECT id FROM batches WHERE scope=? AND active=1',(scope,)).fetchall()
         # Manual and conflicting price revisions require a visible decision.
         conflicts=[]
@@ -191,9 +216,17 @@ def mapped_rows(sid,config):
         source=c.execute('SELECT * FROM sources WHERE id=?',(sid,)).fetchone()
     if not source:
         raise ValueError('원본을 찾을 수 없습니다')
-    if source['status']=='cancelled':
-        raise ValueError('취소한 자료는 먼저 복원해주세요')
+    if source['status'] in ('cancelled','deleted'):
+        raise ValueError('삭제·취소한 자료는 반영할 수 없습니다')
     data=tables(source_path(source))
+    from .plan_import import matches
+    if matches(data):raise ValueError('월계획 전용 등록을 사용해주세요. 날짜·품번·납품처·수량을 자동 연결합니다.')
+    from .supplier_import import identify as supplier_type
+    if supplier_type(data):
+        raise ValueError('이 파일은 촉매사 마감자료입니다. 열 연결 대신 마감자료 등록에서 월만 선택해주세요.')
+    from .erp_import import is_layout
+    if any(is_layout(rows) for rows in data.values()):
+        raise ValueError('ERP 월 입고 전용 등록을 사용해주세요. 전체 합계와 거래처별 수량을 일반 열 연결로 중복 반영할 수 없습니다.')
     sheet=config['sheet']
     header=int(config['header_row'])
     if sheet not in data or header<1 or header>len(data[sheet]):

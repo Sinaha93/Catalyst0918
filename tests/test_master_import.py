@@ -25,7 +25,7 @@ def setup(tmp_path,monkeypatch):
     return {'bom_id':bom,'price_id':price,'effective_date':'2026-08-01','reason':'확인'}
 
 
-def test_master_pair_preview_apply_cancel_restore(setup):
+def test_master_pair_preview_apply_delete(setup):
     r=master_import.preview(setup)
     assert not r['errors'] and r['prices']==1 and r['links']==1
     assert r['rows'][-1]['provenance']['link']['supplier']=='한국유미코아촉매'
@@ -37,10 +37,9 @@ def test_master_pair_preview_apply_cancel_restore(setup):
     assert row['receipt_amount']=='354000' and row['supplier']=='한국유미코아촉매'
     sid=setup['price_id'];view=source_lifecycle.impact(sid)
     assert len(view['sources'])==2
-    source_lifecycle.change(sid,{'fingerprint':view['fingerprint'],'reason':'취소'})
+    source_lifecycle.change(sid,{'fingerprint':view['fingerprint'],'reason':'삭제','confirm':True})
     assert closing.preview('2026-08')['details'][0]['receipt_amount'] is None
-    source_lifecycle.change(sid,{'fingerprint':source_lifecycle.impact(sid)['fingerprint'],'reason':'복원'})
-    assert closing.preview('2026-08')['details'][0]['receipt_amount']=='354000'
+    with pytest.raises(ValueError):source_lifecycle.impact(sid)
 
 
 def test_effective_date_required_and_normalization(setup):

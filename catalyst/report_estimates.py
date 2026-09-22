@@ -1,12 +1,17 @@
 """Separate planning estimates from the recorded closing valuation in exports."""
 from decimal import Decimal
+import re
 
 def report_note(row):
-    note=row.get('note','')
+    note=row.get('note') or ''
     if any(e.get('migration')=='2026-08 reviewed historical bootstrap' for e in row.get('evidence',[])):
         note=note.replace('기존 8월 마감 정산수량 이관','').replace('기존 마감 이월 수량; 등록 단가 기준 평가','')
         note=note.strip(' /')
-    return note
+    # Export business reasons, not import provenance. Evidence stays in the snapshot.
+    parts=re.split(r'\s+/\s+|\r?\n',note or '')
+    return ' / '.join(p.strip() for p in parts if p.strip() and
+        p.strip() not in {'월계획','ERP 추출단가','ERP 추출 단가'} and
+        not re.fullmatch(r'.*\.(?:xlsx|xlsm|xls|csv|pptx)',p.strip(),re.IGNORECASE))
 
 
 def estimate_rows(snapshot):

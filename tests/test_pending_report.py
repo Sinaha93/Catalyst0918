@@ -17,6 +17,17 @@ def test_settled_opening_is_kept():
     r.update(opening='0',settlement='0')
     assert grouped_rows([r],['C'])==[]
 
+
+def test_notes_and_fully_settled_current_receipts_do_not_force_inclusion():
+    hidden=detail();hidden.update(opening='0',receipt='100',settlement='100',closing='0',closing_amount='0',note='월계획 / ERP 추출단가 / 구매단가등록_20260921.xlsx')
+    visible=detail();visible.update(opening='0',receipt='10',settlement='6',closing='4',closing_amount='40')
+    rows=grouped_rows([hidden,visible],['C'])
+    assert len(rows)==2 and rows[0]['number']==1
+    assert rows[-1]['receipt']=='10' and rows[-1]['settlement']=='6'
+    assert rows[-1]['closing']=='4' and rows[-1]['closing_amount']=='40'
+    hidden.update(receipt='0',settlement='0',note='개발 이벤트')
+    assert grouped_rows([hidden],['C'])==[]
+
 def test_pagination_no_orphan_and_no_loss():
     for count in range(1,75):
         rows=grouped_rows([detail() for _ in range(count)]+[detail('D')],['C','D'])

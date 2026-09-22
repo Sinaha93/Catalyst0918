@@ -37,14 +37,13 @@ def main():
                     time.sleep(.2)
             else:raise RuntimeError('Startup timeout')
             assert b'/assets/' in call('/')
-            for expected in (0,1):
-                impact=json.loads(call(f'/api/sources/{sid}/impact'))
-                call(f'/api/sources/{sid}/cancel-or-restore',{'fingerprint':impact['fingerprint'],'reason':'격리 실행 시험'})
-                assert len(json.loads(call('/api/records')))==expected
+            impact=json.loads(call(f'/api/sources/{sid}/impact'))
+            call(f'/api/sources/{sid}/delete',{'fingerprint':impact['fingerprint'],'reason':'격리 실행 시험','confirm':True})
+            assert len(json.loads(call('/api/records')))==0
             call('/api/shutdown',{})
             proc.wait(timeout=15)
             assert proc.returncode==0
-            print('PASS: windowed executable, frontend serving, cancellation, restoration and clean shutdown')
+            print('PASS: windowed executable, frontend serving, permanent deletion and clean shutdown')
         finally:
             if proc.poll() is None:proc.terminate();proc.wait(timeout=15)
 

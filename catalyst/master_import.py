@@ -22,7 +22,7 @@ def identify(data):
 
 def read(sid,expected):
     with store.db() as c: source=c.execute('SELECT * FROM sources WHERE id=?',(sid,)).fetchone()
-    if not source or source['status']=='cancelled': raise ValueError('사용할 등록 자료를 선택해주세요')
+    if not source or source['status'] in ('cancelled','deleted'): raise ValueError('사용할 등록 자료를 선택해주세요')
     data=imports.tables(imports.source_path(source))
     if identify(data)!=expected: raise ValueError(expected+' 양식이 아닙니다')
     return source,data
