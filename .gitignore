@@ -11,6 +11,7 @@ outputs/
 backups/
 *.exe
 *.lnk
+!촉매마감관리_실행.lnk
 logs/
 work/
 *.spec
